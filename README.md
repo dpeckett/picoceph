@@ -7,7 +7,7 @@ Run Ceph and RADDS Gateway (RGW) in a single Docker container. Useful for testin
 ### Start Container
 
 ```shell
-docker run --rm --name picoceph --privileged -v /dev:/dev -v /lib/modules:/lib/modules:ro -p7480:7480 picoceph:latest
+docker run --rm --name picoceph --privileged -v /dev:/dev -v /lib/modules:/lib/modules:ro -p7480:7480 ghcr.io/bucket-sailor/picoceph:latest
 ```
 
 The S3 service is available at [http://localhost:7480](http://localhost:7480).
