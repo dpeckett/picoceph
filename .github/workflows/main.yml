@@ -1,0 +1,60 @@
+name: Build and Push Image
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ v* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - uses: earthly/actions-setup@v1
+      with:
+        version: v0.7.23
+  
+    - name: Check Out Repo
+      uses: actions/checkout@v3
+    
+    - name: Lint
+      run: earthly +lint
+
+    - name: Build
+      run: earthly +build
+
+    - name: Test
+      run: earthly +test
+
+  push:
+    needs: build-and-test
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+ 
+    - uses: earthly/actions-setup@v1
+      with:
+        version: v0.7.23
+
+    - name: Check Out Repo
+      uses: actions/checkout@v3
+
+    - name: Build and Push Operator Image
+      run: earthly --push +docker-all --VERSION=${{ github.ref_name }}
