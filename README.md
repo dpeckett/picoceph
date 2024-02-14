@@ -1,6 +1,6 @@
 # picoceph
 
-Run Ceph and RADDS Gateway (RGW) in a single Docker container. Useful for testing S3 client applications.
+Run Ceph and RADDS Gateway (RGW) in a single Docker container. Useful for testing S3 applications.
 
 ## Usage
 

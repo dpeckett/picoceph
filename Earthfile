@@ -1,26 +1,14 @@
 VERSION 0.7
-FROM debian:bookworm
+FROM golang:1.21-bookworm
 WORKDIR /workspace
 
 docker-all:
   BUILD --platform=linux/amd64 --platform=linux/arm64 +docker
 
 docker:
+  FROM quay.io/ceph/ceph:v18.2
   ARG TARGETARCH
-  RUN apt update
-  RUN apt install -y ceph ceph-common radosgw qemu-utils kmod udev
-  COPY ceph.conf /etc/ceph/ceph.conf
-  RUN ceph-authtool --create-keyring /tmp/ceph.mon.keyring --gen-key -n mon. --cap mon 'allow *' \
-    && ceph-authtool --create-keyring /etc/ceph/ceph.client.admin.keyring --gen-key -n client.admin --cap mon 'allow *' --cap osd 'allow *' --cap mds 'allow *' --cap mgr 'allow *' \
-    && ceph-authtool --create-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring --gen-key -n client.bootstrap-osd --cap mon 'profile bootstrap-osd' --cap mgr 'allow r' \
-    && ceph-authtool /tmp/ceph.mon.keyring --import-keyring /etc/ceph/ceph.client.admin.keyring \
-    && ceph-authtool /tmp/ceph.mon.keyring --import-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring \
-    && chown ceph:ceph /tmp/ceph.mon.keyring \
-    && monmaptool --create --addv a '[v2:127.0.0.1:3300,v1:127.0.0.1:6789]' --fsid 2b82f0c5-4ab2-4e20-b641-5700c2247feb /tmp/monmap \
-    && ceph-mon --mkfs -i a --monmap /tmp/monmap --keyring /tmp/ceph.mon.keyring \
-    && chown -R ceph:ceph /var/lib/ceph /etc/ceph
-  # Keep ceph-volume happy.
-  RUN ln -s /bin/true /usr/bin/systemctl
+  RUN yum install -y qemu-img
   COPY (+build/picoceph --GOARCH=${TARGETARCH}) /usr/bin/picoceph
   EXPOSE 7480/tcp
   ENTRYPOINT ["picoceph"]
@@ -29,8 +17,6 @@ docker:
   SAVE IMAGE --push ghcr.io/bucket-sailor/picoceph:latest
 
 build:
-  FROM golang:1.21-bookworm
-  WORKDIR /workspace
   ARG GOOS=linux
   ARG GOARCH=amd64
   COPY go.mod go.sum ./
@@ -51,8 +37,6 @@ lint:
   RUN golangci-lint run --timeout 5m ./...
 
 test:
-  FROM golang:1.21-bookworm
-  WORKDIR /workspace
   COPY . ./
   RUN go test -coverprofile=coverage.out -v ./...
   SAVE ARTIFACT ./coverage.out AS LOCAL coverage.out
