@@ -37,6 +37,26 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{}))
 
+	logger.Info("Creating ceph directories")
+
+	cephUserUid, cephGroupGid, err := cephUser()
+	if err != nil {
+		logger.Error("Could not get ceph user", "error", err)
+		os.Exit(1)
+	}
+
+	for _, dir := range []string{"/etc/ceph", "/var/lib/ceph", "/var/log/ceph"} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			logger.Error("Could not create directory", "error", err)
+			os.Exit(1)
+		}
+
+		if err := os.Chown(dir, cephUserUid, cephGroupGid); err != nil {
+			logger.Error("Could not change owner", "error", err)
+			os.Exit(1)
+		}
+	}
+
 	logger.Info("Writing ceph.conf")
 
 	fsid := uuid.New().String()
