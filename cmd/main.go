@@ -15,18 +15,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"os"
 	"os/exec"
 	"os/signal"
 	"os/user"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/bucket-sailor/picoceph/data"
+	"github.com/bucket-sailor/picoceph/internal/nbd"
+	"github.com/bucket-sailor/picoceph/internal/tmpl"
+	"github.com/bucket-sailor/picoceph/internal/util"
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 )
@@ -202,7 +202,7 @@ func configureRADOSGateway(ctx context.Context) error {
 		return fmt.Errorf("could not get ceph user: %w", err)
 	}
 
-	if err := chownRecursive("/var/lib/ceph/radosgw/ceph-radosgw.gateway", cephUserUid, cephGroupGid); err != nil {
+	if err := util.ChownRecursive("/var/lib/ceph/radosgw/ceph-radosgw.gateway", cephUserUid, cephGroupGid); err != nil {
 		return fmt.Errorf("could not change owner: %w", err)
 	}
 
@@ -238,7 +238,7 @@ func configureManager(ctx context.Context) error {
 		return fmt.Errorf("could not get ceph user: %w", err)
 	}
 
-	if err := chownRecursive("/var/lib/ceph/mgr/ceph-a", cephUserUid, cephGroupGid); err != nil {
+	if err := util.ChownRecursive("/var/lib/ceph/mgr/ceph-a", cephUserUid, cephGroupGid); err != nil {
 		return fmt.Errorf("could not change owner: %w", err)
 	}
 
@@ -290,7 +290,7 @@ func configureMonitor(ctx context.Context, fsid string) error {
 		return fmt.Errorf("could not get ceph user: %w", err)
 	}
 
-	if err := chownRecursive("/etc/ceph", cephUserUid, cephGroupGid); err != nil {
+	if err := util.ChownRecursive("/etc/ceph", cephUserUid, cephGroupGid); err != nil {
 		return fmt.Errorf("could not change owner: %w", err)
 	}
 
@@ -308,7 +308,7 @@ func writeCephConf(fsid string) error {
 	}
 	defer cephConf.Close()
 
-	tmpl := data.GetCephConfTmpl()
+	tmpl := tmpl.GetCephConf()
 
 	if err := tmpl.Execute(cephConf, struct {
 		FSID string
@@ -348,18 +348,19 @@ func createOSDDevice(ctx context.Context) error {
 		return fmt.Errorf("could not create qemu image: %w: %s", err, output)
 	}
 
-	// Mount the image using nbd.
-	cmd = exec.CommandContext(ctx, "/sbin/modprobe", "nbd")
-	if output, err := cmd.Output(); err != nil {
-		return fmt.Errorf("could not load nbd module: %w: %s", err, output)
+	// Load the nbd kernel module (if not already loaded or built-in).
+	if err := nbd.Setup(ctx); err != nil {
+		// TODO: maybe we can fall back to using a loop device?
+		return fmt.Errorf("could not setup nbd: %w", err)
 	}
 
 	// Find the next free nbd device.
-	nbdDevicePath, err := findNextFreeNBDDevice()
+	nbdDevicePath, err := nbd.NextFreeDevice()
 	if err != nil {
 		return fmt.Errorf("could not find free nbd device: %w", err)
 	}
 
+	// Mount the image using nbd.
 	cmd = exec.CommandContext(ctx, "qemu-nbd", "--connect="+nbdDevicePath, "/var/lib/ceph/disk/osd-0.qcow2")
 	if output, err := cmd.Output(); err != nil {
 		return fmt.Errorf("could not mount qemu image: %w: %s", err, output)
@@ -386,34 +387,6 @@ func createOSDDevice(ctx context.Context) error {
 	return nil
 }
 
-func findNextFreeNBDDevice() (string, error) {
-	dir, err := os.Open("/sys/block")
-	if err != nil {
-		return "", fmt.Errorf("could not open /sys/block: %w", err)
-	}
-	defer dir.Close()
-
-	devices, err := dir.Readdirnames(-1)
-	if err != nil {
-		return "", fmt.Errorf("could not read /sys/block: %w", err)
-	}
-
-	var availableNBDDevices []string
-	for _, dev := range devices {
-		if strings.HasPrefix(dev, "nbd") {
-			if _, err := os.ReadFile(filepath.Join("/sys/block", dev, "pid")); errors.Is(err, os.ErrNotExist) {
-				availableNBDDevices = append(availableNBDDevices, dev)
-			}
-		}
-	}
-
-	if len(availableNBDDevices) == 0 {
-		return "", fmt.Errorf("no free nbd devices found")
-	}
-
-	return filepath.Join("/dev/", availableNBDDevices[rand.Intn(len(availableNBDDevices))]), nil
-}
-
 func cephUser() (int, int, error) {
 	cephUser, err := user.Lookup("ceph")
 	if err != nil {
@@ -436,18 +409,4 @@ func cephUser() (int, int, error) {
 	}
 
 	return cephUserUid, cephGroupGid, nil
-}
-
-func chownRecursive(path string, uid, gid int) error {
-	if err := os.Chown(path, uid, gid); err != nil {
-		return err
-	}
-
-	return filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		return os.Chown(path, uid, gid)
-	})
 }

@@ -7,22 +7,23 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-package data
+package util
 
 import (
-	_ "embed"
-	"text/template"
+	"os"
+	"path/filepath"
 )
 
-//go:embed ceph.conf.tmpl
-var CephConfTmpl string
-
-// GetCephConfTmpl returns the ceph.conf template.
-func GetCephConfTmpl() *template.Template {
-	tmpl, err := template.New("ceph.conf").Parse(CephConfTmpl)
-	if err != nil {
-		panic(err)
+func ChownRecursive(path string, uid, gid int) error {
+	if err := os.Chown(path, uid, gid); err != nil {
+		return err
 	}
 
-	return tmpl
+	return filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		return os.Chown(path, uid, gid)
+	})
 }
