@@ -12,7 +12,7 @@ docker run --rm --name picoceph --privileged -v /dev:/dev -v /lib/modules:/lib/m
 
 ### S3
 
-The S3 service is available at [http://localhost:7480](http://localhost:7480).
+The RADOS Gateway S3 service is available at [http://localhost:7480](http://localhost:7480).
 
 #### Create an S3 User
 
