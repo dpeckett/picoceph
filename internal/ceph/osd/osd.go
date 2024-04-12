@@ -14,25 +14,25 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 
 	"github.com/bucket-sailor/picoceph/internal/ceph"
 	"github.com/bucket-sailor/picoceph/internal/nbd"
+	"github.com/nxadm/tail"
 )
 
 type OSD struct {
-	id int
+	id string
 }
 
-func New(id int) ceph.Component {
+func New(id string) ceph.Component {
 	return &OSD{
 		id: id,
 	}
 }
 
 func (osd *OSD) Name() string {
-	return "osd"
+	return fmt.Sprintf("osd (osd.%s)", osd.id)
 }
 
 func (osd *OSD) Configure(ctx context.Context) error {
@@ -41,7 +41,7 @@ func (osd *OSD) Configure(ctx context.Context) error {
 	}
 
 	// Prepare the OSD device.
-	cmd := exec.CommandContext(ctx, "ceph-volume", "lvm", "create", "--no-systemd", "--data", fmt.Sprintf("ceph-vg-%d/osd", osd.id), "--osd-id", strconv.Itoa(osd.id))
+	cmd := exec.CommandContext(ctx, "ceph-volume", "lvm", "create", "--no-systemd", "--data", fmt.Sprintf("ceph-vg-%s/osd", osd.id), "--osd-id", osd.id)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not prepare OSD device: %w: %s", err, string(out))
 	}
@@ -50,7 +50,7 @@ func (osd *OSD) Configure(ctx context.Context) error {
 }
 
 func (osd *OSD) Start(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "ceph-osd", "-f", "--id", strconv.Itoa(osd.id))
+	cmd := exec.CommandContext(ctx, "ceph-osd", "-f", "--id", osd.id)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		if strings.Contains(err.Error(), "signal: killed") {
 			return nil
@@ -65,10 +65,10 @@ func (osd *OSD) Start(ctx context.Context) error {
 // createDevice creates a new NBD block device for the OSD.
 func (osd *OSD) createDevice(ctx context.Context) error {
 	// Clean up any orphaned device nodes from previous runs.
-	cmd := exec.CommandContext(ctx, "/usr/sbin/dmsetup", "remove", "-v", fmt.Sprintf("ceph--vg--%d-osd", osd.id))
+	cmd := exec.CommandContext(ctx, "/usr/sbin/dmsetup", "remove", "-v", fmt.Sprintf("ceph--vg--%s-osd", osd.id))
 	_ = cmd.Run()
 
-	if err := os.RemoveAll(fmt.Sprintf("/dev/ceph-vg-%d", osd.id)); err != nil {
+	if err := os.RemoveAll("/dev/ceph-vg-" + osd.id); err != nil {
 		return fmt.Errorf("could not remove directory: %w", err)
 	}
 
@@ -77,7 +77,7 @@ func (osd *OSD) createDevice(ctx context.Context) error {
 	}
 
 	// Create a qemu image.
-	cmd = exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", fmt.Sprintf("/var/lib/ceph/disk/osd-%d.qcow2", osd.id), "10G")
+	cmd = exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", fmt.Sprintf("/var/lib/ceph/disk/osd-%s.qcow2", osd.id), "10G")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not create qemu image: %w: %s", err, string(out))
 	}
@@ -95,7 +95,7 @@ func (osd *OSD) createDevice(ctx context.Context) error {
 	}
 
 	// Mount the image using nbd.
-	cmd = exec.CommandContext(ctx, "qemu-nbd", "--connect="+nbdDevicePath, fmt.Sprintf("/var/lib/ceph/disk/osd-%d.qcow2", osd.id))
+	cmd = exec.CommandContext(ctx, "qemu-nbd", "--connect="+nbdDevicePath, fmt.Sprintf("/var/lib/ceph/disk/osd-%s.qcow2", osd.id))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not mount qemu image: %w: %s", err, string(out))
 	}
@@ -107,17 +107,24 @@ func (osd *OSD) createDevice(ctx context.Context) error {
 		return fmt.Errorf("could not create physical volume: %w: %s", err, string(out))
 	}
 
-	cmd = exec.CommandContext(ctx, "vgcreate", fmt.Sprintf("ceph-vg-%d", osd.id), nbdDevicePath)
+	cmd = exec.CommandContext(ctx, "vgcreate", "ceph-vg-"+osd.id, nbdDevicePath)
 	cmd.Env = append(os.Environ(), "DM_DISABLE_UDEV=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not create volume group: %w: %s", err, string(out))
 	}
 
-	cmd = exec.CommandContext(ctx, "lvcreate", "-l", "100%FREE", "-n", "osd", fmt.Sprintf("ceph-vg-%d", osd.id))
+	cmd = exec.CommandContext(ctx, "lvcreate", "-l", "100%FREE", "-n", "osd", "ceph-vg-"+osd.id)
 	cmd.Env = append(os.Environ(), "DM_DISABLE_UDEV=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not create logical volume: %w: %s", err, string(out))
 	}
 
 	return nil
+}
+
+func (osd *OSD) Logs() (*tail.Tail, error) {
+	return tail.TailFile(
+		fmt.Sprintf("/var/log/ceph/ceph-osd.%s.log", osd.id),
+		tail.Config{Follow: true, ReOpen: true},
+	)
 }

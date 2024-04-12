@@ -1,10 +1,10 @@
 # picoceph
 
-Run Ceph and RADOS Gateway (RGW) in a single Docker container. Useful for testing S3 applications.
+Run Ceph and RADOS Gateway (RGW) in a single Docker container. Useful for developing and testing S3 applications.
 
 ## Usage
 
-### Start Container
+### Start
 
 ```shell
 docker run --rm --name picoceph --privileged -v /dev:/dev -v /lib/modules:/lib/modules:ro -p7480:7480 -p8080:8080 ghcr.io/bucket-sailor/picoceph:latest

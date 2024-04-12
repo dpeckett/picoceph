@@ -66,9 +66,9 @@ func main() {
 	g, ctx := errgroup.WithContext(ctx)
 
 	components := []ceph.Component{
-		monitor.New(fsid),
-		manager.New(),
-		osd.New(0),
+		monitor.New("a", fsid),
+		manager.New("a"),
+		osd.New("0"),
 		radosgw.New(),
 		dashboard.New(),
 	}
@@ -82,6 +82,20 @@ func main() {
 			if err := cmp.Configure(ctx); err != nil {
 				return fmt.Errorf("could not configure component: %w", err)
 			}
+
+			// Start echoing logs from the component.
+			go func() {
+				t, err := cmp.Logs()
+				if err != nil {
+					logger.Error("Could not tail logs", "error", err)
+					return
+				}
+				defer t.Cleanup()
+
+				for line := range t.Lines {
+					logger.Info(line.Text, "component", cmp.Name())
+				}
+			}()
 
 			logger.Info("Starting", "component", cmp.Name())
 
@@ -97,6 +111,9 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-sigCh
+
+		logger.Info("Shutting down")
+
 		cancel()
 	}()
 

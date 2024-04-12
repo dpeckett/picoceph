@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/bucket-sailor/picoceph/internal/ceph"
+	"github.com/nxadm/tail"
 )
 
 type Dashboard struct{}
@@ -92,4 +93,12 @@ func (d *Dashboard) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (d *Dashboard) Logs() (*tail.Tail, error) {
+	// Dashboard logs are logged by the manager.
+	return tail.TailFile(
+		"/dev/null",
+		tail.Config{Follow: true, ReOpen: true},
+	)
 }

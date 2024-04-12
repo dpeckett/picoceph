@@ -9,7 +9,11 @@
 
 package ceph
 
-import "context"
+import (
+	"context"
+
+	"github.com/nxadm/tail"
+)
 
 // Component is a Ceph component eg. monitor, dashboard, etc.
 type Component interface {
@@ -19,4 +23,6 @@ type Component interface {
 	Configure(ctx context.Context) error
 	// Start starts the component.
 	Start(ctx context.Context) error
+	// Logs returns the logs of the component.
+	Logs() (*tail.Tail, error)
 }

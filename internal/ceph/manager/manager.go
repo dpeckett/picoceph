@@ -19,24 +19,29 @@ import (
 
 	"github.com/bucket-sailor/picoceph/internal/ceph"
 	"github.com/bucket-sailor/picoceph/internal/util"
+	"github.com/nxadm/tail"
 )
 
-type Manager struct{}
-
-func New() ceph.Component {
-	return &Manager{}
+type Manager struct {
+	id string
 }
 
-func (m *Manager) Name() string {
-	return "manager"
+func New(id string) ceph.Component {
+	return &Manager{
+		id: id,
+	}
 }
 
-func (m *Manager) Configure(ctx context.Context) error {
-	if err := os.MkdirAll("/var/lib/ceph/mgr/ceph-a", 0o755); err != nil {
+func (mgr *Manager) Name() string {
+	return fmt.Sprintf("manager (mgr.%s)", mgr.id)
+}
+
+func (mgr *Manager) Configure(ctx context.Context) error {
+	if err := os.MkdirAll("/var/lib/ceph/mgr/ceph-"+mgr.id, 0o755); err != nil {
 		return fmt.Errorf("could not create directory: %w", err)
 	}
 
-	mgrKeyring, err := os.Create("/var/lib/ceph/mgr/ceph-a/keyring")
+	mgrKeyring, err := os.Create(fmt.Sprintf("/var/lib/ceph/mgr/ceph-%s/keyring", mgr.id))
 	if err != nil {
 		return fmt.Errorf("could not create keyring: %w", err)
 	}
@@ -46,7 +51,7 @@ func (m *Manager) Configure(ctx context.Context) error {
 	cephCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(cephCtx, "ceph", "auth", "get-or-create", "mgr.a", "mon", "allow profile mgr", "osd", "allow *", "mds", "allow *")
+	cmd := exec.CommandContext(cephCtx, "ceph", "auth", "get-or-create", fmt.Sprintf("mgr.%s", mgr.id), "mon", "allow profile mgr", "osd", "allow *", "mds", "allow *")
 	cmd.Stdout = mgrKeyring
 
 	var out strings.Builder
@@ -61,15 +66,15 @@ func (m *Manager) Configure(ctx context.Context) error {
 		return fmt.Errorf("could not get ceph user: %w", err)
 	}
 
-	if err := util.ChownRecursive("/var/lib/ceph/mgr/ceph-a", cephUserUid, cephGroupGid); err != nil {
+	if err := util.ChownRecursive("/var/lib/ceph/mgr/ceph-"+mgr.id, cephUserUid, cephGroupGid); err != nil {
 		return fmt.Errorf("could not change owner: %w", err)
 	}
 
 	return nil
 }
 
-func (m *Manager) Start(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "ceph-mgr", "-f", "-i", "a")
+func (mgr *Manager) Start(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, "ceph-mgr", "-f", "-i", mgr.id)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		if strings.Contains(err.Error(), "signal: killed") {
 			return nil
@@ -79,4 +84,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (mgr *Manager) Logs() (*tail.Tail, error) {
+	return tail.TailFile(
+		fmt.Sprintf("/var/log/ceph/ceph-mgr.%s.log", mgr.id),
+		tail.Config{Follow: true, ReOpen: true},
+	)
 }

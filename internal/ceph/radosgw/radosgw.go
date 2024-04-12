@@ -19,6 +19,7 @@ import (
 
 	"github.com/bucket-sailor/picoceph/internal/ceph"
 	"github.com/bucket-sailor/picoceph/internal/util"
+	"github.com/nxadm/tail"
 )
 
 type RADOSGW struct{}
@@ -28,7 +29,7 @@ func New() ceph.Component {
 }
 
 func (rgw *RADOSGW) Name() string {
-	return "radosgw"
+	return "rgw.gateway"
 }
 
 func (rgw *RADOSGW) Configure(ctx context.Context) error {
@@ -79,4 +80,11 @@ func (rgw *RADOSGW) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (rgw *RADOSGW) Logs() (*tail.Tail, error) {
+	return tail.TailFile(
+		"/var/log/ceph/ceph-client.radosgw.gateway.log",
+		tail.Config{Follow: true, ReOpen: true},
+	)
 }

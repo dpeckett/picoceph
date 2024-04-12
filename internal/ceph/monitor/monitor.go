@@ -18,60 +18,78 @@ import (
 
 	"github.com/bucket-sailor/picoceph/internal/ceph"
 	"github.com/bucket-sailor/picoceph/internal/util"
+	"github.com/nxadm/tail"
 )
 
 type Monitor struct {
+	id   string
 	fsid string
 }
 
-func New(fsid string) ceph.Component {
+func New(id, fsid string) ceph.Component {
 	return &Monitor{
+		id:   id,
 		fsid: fsid,
 	}
 }
 
-func (m *Monitor) Name() string {
-	return "monitor"
+func (mon *Monitor) Name() string {
+	return fmt.Sprintf("monitor (mon.%s)", mon.id)
 }
 
-func (m *Monitor) Configure(ctx context.Context) error {
-	if err := os.MkdirAll("/var/lib/ceph/mon/ceph-a", 0o755); err != nil {
-		return fmt.Errorf("could not create directory: %w", err)
+func (mon *Monitor) Configure(ctx context.Context) error {
+	if _, err := os.Stat("/etc/ceph/ceph.client.admin.keyring"); os.IsNotExist(err) {
+		cmd := exec.CommandContext(ctx, "ceph-authtool", "--create-keyring", "/etc/ceph/ceph.client.admin.keyring", "--gen-key", "-n", "client.admin", "--cap", "mon", "allow *", "--cap", "osd", "allow *", "--cap", "mds", "allow *", "--cap", "mgr", "allow *")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("could not create keyring: %w: %s", err, string(out))
+		}
 	}
 
-	cmd := exec.CommandContext(ctx, "ceph-authtool", "--create-keyring", "/tmp/ceph.mon.keyring", "--gen-key", "-n", "mon.", "--cap", "mon", "allow *")
+	if _, err := os.Stat("/var/lib/ceph/bootstrap-osd/ceph.keyring"); os.IsNotExist(err) {
+		cmd := exec.CommandContext(ctx, "ceph-authtool", "--create-keyring", "/var/lib/ceph/bootstrap-osd/ceph.keyring", "--gen-key", "-n", "client.bootstrap-osd", "--cap", "mon", "profile bootstrap-osd", "--cap", "mgr", "allow r")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("could not create keyring: %w: %s", err, string(out))
+		}
+	}
+
+	keyRingPath := fmt.Sprintf("/tmp/ceph.mon.%s.keyring", mon.id)
+
+	cmd := exec.CommandContext(ctx, "ceph-authtool", "--create-keyring", keyRingPath, "--gen-key", "-n", "mon.", "--cap", "mon", "allow *")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not create keyring: %w: %s", err, string(out))
 	}
 
-	cmd = exec.CommandContext(ctx, "ceph-authtool", "--create-keyring", "/etc/ceph/ceph.client.admin.keyring", "--gen-key", "-n", "client.admin", "--cap", "mon", "allow *", "--cap", "osd", "allow *", "--cap", "mds", "allow *", "--cap", "mgr", "allow *")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("could not create keyring: %w: %s", err, string(out))
-	}
-
-	cmd = exec.CommandContext(ctx, "ceph-authtool", "--create-keyring", "/var/lib/ceph/bootstrap-osd/ceph.keyring", "--gen-key", "-n", "client.bootstrap-osd", "--cap", "mon", "profile bootstrap-osd", "--cap", "mgr", "allow r")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("could not create keyring: %w: %s", err, string(out))
-	}
-
-	cmd = exec.CommandContext(ctx, "ceph-authtool", "/tmp/ceph.mon.keyring", "--import-keyring", "/etc/ceph/ceph.client.admin.keyring")
+	cmd = exec.CommandContext(ctx, "ceph-authtool", keyRingPath, "--import-keyring", "/etc/ceph/ceph.client.admin.keyring")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not import keyring: %w: %s", err, string(out))
 	}
 
-	cmd = exec.CommandContext(ctx, "ceph-authtool", "/tmp/ceph.mon.keyring", "--import-keyring", "/var/lib/ceph/bootstrap-osd/ceph.keyring")
+	cmd = exec.CommandContext(ctx, "ceph-authtool", keyRingPath, "--import-keyring", "/var/lib/ceph/bootstrap-osd/ceph.keyring")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not import keyring: %w: %s", err, string(out))
 	}
 
-	cmd = exec.CommandContext(ctx, "monmaptool", "--create", "--addv", "a", "[v2:127.0.0.1:3300,v1:127.0.0.1:6789]", "--fsid", m.fsid, "/tmp/monmap")
+	cmd = exec.CommandContext(ctx, "monmaptool", "--create", "--addv", mon.id, "[v2:127.0.0.1:3300,v1:127.0.0.1:6789]", "--fsid", mon.fsid, "/tmp/monmap-"+mon.id)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not create monmap: %w: %s", err, string(out))
 	}
 
-	cmd = exec.CommandContext(ctx, "ceph-mon", "--mkfs", "-i", "a", "--monmap", "/tmp/monmap", "--keyring", "/tmp/ceph.mon.keyring")
+	if err := os.MkdirAll("/var/lib/ceph/mon/ceph-"+mon.id, 0o755); err != nil {
+		return fmt.Errorf("could not create directory: %w", err)
+	}
+
+	cmd = exec.CommandContext(ctx, "ceph-mon", "--mkfs", "-i", mon.id, "--monmap", "/tmp/monmap-"+mon.id, "--keyring", keyRingPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not create monitor: %w: %s", err, string(out))
+	}
+
+	// Delete the temporary keyring and monmap.
+	if err := os.Remove(keyRingPath); err != nil {
+		return fmt.Errorf("could not delete keyring: %w", err)
+	}
+
+	if err := os.RemoveAll("/tmp/monmap-" + mon.id); err != nil {
+		return fmt.Errorf("could not delete temporary monmap: %w", err)
 	}
 
 	cephUserUid, cephGroupGid, err := ceph.User()
@@ -83,15 +101,15 @@ func (m *Monitor) Configure(ctx context.Context) error {
 		return fmt.Errorf("could not change owner: %w", err)
 	}
 
-	if err := os.Chown("/var/lib/ceph/mon/ceph-a", cephUserUid, cephGroupGid); err != nil {
+	if err := os.Chown("/var/lib/ceph/mon/ceph-"+mon.id, cephUserUid, cephGroupGid); err != nil {
 		return fmt.Errorf("could not change owner: %w", err)
 	}
 
 	return nil
 }
 
-func (m *Monitor) Start(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "ceph-mon", "-f", "-i", "a")
+func (mon *Monitor) Start(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, "ceph-mon", "-f", "-i", mon.id)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		if strings.Contains(err.Error(), "signal: killed") {
 			return nil
@@ -101,4 +119,11 @@ func (m *Monitor) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (mon *Monitor) Logs() (*tail.Tail, error) {
+	return tail.TailFile(
+		fmt.Sprintf("/var/log/ceph/ceph-mon.%s.log", mon.id),
+		tail.Config{Follow: true, ReOpen: true},
+	)
 }
