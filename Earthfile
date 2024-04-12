@@ -1,5 +1,5 @@
 VERSION 0.7
-FROM golang:1.21-bookworm
+FROM golang:1.22-bookworm
 WORKDIR /workspace
 
 docker-all:
@@ -10,7 +10,8 @@ docker:
   ARG TARGETARCH
   RUN yum install -y qemu-img
   COPY (+build/picoceph --GOARCH=${TARGETARCH}) /usr/bin/picoceph
-  EXPOSE 7480/tcp
+  EXPOSE 7480/tcp # S3 API
+  EXPOSE 8080/tcp # Dashboard
   ENTRYPOINT ["picoceph"]
   ARG VERSION=latest-dev
   SAVE IMAGE --push ghcr.io/bucket-sailor/picoceph:${VERSION}
@@ -31,7 +32,7 @@ tidy:
   RUN go fmt ./...
 
 lint:
-  FROM golangci/golangci-lint:v1.55.2
+  FROM golangci/golangci-lint:v1.57.2
   WORKDIR /workspace
   COPY . ./
   RUN golangci-lint run --timeout 5m ./...

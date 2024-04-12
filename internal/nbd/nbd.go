@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: MPL-2.0
- *
+// SPDX-License-Identifier: MPL-2.0
+/*
  * Copyright (c) 2024 Damian Peckett <damian@pecke.tt>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public

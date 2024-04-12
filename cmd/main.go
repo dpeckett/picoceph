@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: MPL-2.0
- *
+// SPDX-License-Identifier: MPL-2.0
+/*
  * Copyright (c) 2024 Damian Peckett <damian@pecke.tt>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
@@ -10,23 +10,20 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"os/signal"
-	"os/user"
-	"strconv"
-	"strings"
 	"syscall"
-	"time"
 
-	"github.com/bucket-sailor/picoceph/internal/nbd"
-	"github.com/bucket-sailor/picoceph/internal/tmpl"
-	"github.com/bucket-sailor/picoceph/internal/util"
+	"github.com/bucket-sailor/picoceph/internal/ceph"
+	"github.com/bucket-sailor/picoceph/internal/ceph/dashboard"
+	"github.com/bucket-sailor/picoceph/internal/ceph/manager"
+	"github.com/bucket-sailor/picoceph/internal/ceph/monitor"
+	"github.com/bucket-sailor/picoceph/internal/ceph/osd"
+	"github.com/bucket-sailor/picoceph/internal/ceph/radosgw"
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 )
@@ -39,7 +36,7 @@ func main() {
 
 	logger.Info("Creating ceph directories")
 
-	cephUserUid, cephGroupGid, err := cephUser()
+	cephUserUid, cephGroupGid, err := ceph.User()
 	if err != nil {
 		logger.Error("Could not get ceph user", "error", err)
 		os.Exit(1)
@@ -61,103 +58,40 @@ func main() {
 
 	fsid := uuid.New().String()
 
-	if err := writeCephConf(fsid); err != nil {
+	if err := ceph.WriteConfig(fsid); err != nil {
 		logger.Error("Could not write ceph.conf", "error", err)
 		os.Exit(1)
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
 
-	g.Go(func() error {
-		logger.Info("Configuring monitor")
+	components := []ceph.Component{
+		monitor.New(fsid),
+		manager.New(),
+		osd.New(0),
+		radosgw.New(),
+		dashboard.New(),
+	}
 
-		if err := configureMonitor(ctx, fsid); err != nil {
-			return fmt.Errorf("could not configure monitor: %w", err)
-		}
+	for _, cmp := range components {
+		cmp := cmp
 
-		logger.Info("Starting monitor")
+		g.Go(func() error {
+			logger.Info("Configuring", "component", cmp.Name())
 
-		cmd := exec.CommandContext(ctx, "ceph-mon", "-f", "-i", "a")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			if strings.Contains(err.Error(), "signal: killed") {
-				return nil
+			if err := cmp.Configure(ctx); err != nil {
+				return fmt.Errorf("could not configure component: %w", err)
 			}
 
-			return fmt.Errorf("could not start monitor: %w: %s", err, out)
-		}
+			logger.Info("Starting", "component", cmp.Name())
 
-		return nil
-	})
-
-	g.Go(func() error {
-		logger.Info("Configuring manager")
-
-		if err := configureManager(ctx); err != nil {
-			return fmt.Errorf("could not configure manager: %w", err)
-		}
-
-		logger.Info("Starting manager")
-
-		cmd := exec.CommandContext(ctx, "ceph-mgr", "-f", "-i", "a")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			if strings.Contains(err.Error(), "signal: killed") {
-				return nil
+			if err := cmp.Start(ctx); err != nil {
+				return fmt.Errorf("could not start component: %w", err)
 			}
 
-			return fmt.Errorf("could not start manager: %w: %s", err, out)
-		}
-
-		return nil
-	})
-
-	g.Go(func() error {
-		logger.Info("Creating OSD device")
-
-		if err := createOSDDevice(ctx); err != nil {
-			return fmt.Errorf("could not create OSD device: %w", err)
-		}
-
-		logger.Info("Preparing OSD")
-
-		cmd := exec.CommandContext(ctx, "ceph-volume", "lvm", "create", "--no-systemd", "--data", "ceph-vg/osd-0", "--osd-id", "0")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("could not prepare OSD device: %w: %s", err, out)
-		}
-
-		logger.Info("Starting OSD")
-
-		cmd = exec.CommandContext(ctx, "ceph-osd", "-f", "--id", "0")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			if strings.Contains(err.Error(), "signal: killed") {
-				return nil
-			}
-
-			return fmt.Errorf("could not start OSD: %w: %s", err, out)
-		}
-
-		return nil
-	})
-
-	g.Go(func() error {
-		logger.Info("Configuring RADOS Gateway")
-
-		if err := configureRADOSGateway(ctx); err != nil {
-			return fmt.Errorf("could not configure RADOS Gateway: %w", err)
-		}
-
-		logger.Info("Starting RADOS Gateway")
-
-		cmd := exec.CommandContext(ctx, "radosgw", "-f", "-n", "client.radosgw.gateway")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			if strings.Contains(err.Error(), "signal: killed") {
-				return nil
-			}
-
-			return fmt.Errorf("could not start RADOS Gateway: %w: %s", err, out)
-		}
-
-		return nil
-	})
+			return nil
+		})
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -171,242 +105,4 @@ func main() {
 
 		os.Exit(1)
 	}
-}
-
-func configureRADOSGateway(ctx context.Context) error {
-	if err := os.MkdirAll("/var/lib/ceph/radosgw/ceph-radosgw.gateway", 0o755); err != nil {
-		return fmt.Errorf("could not create directory: %w", err)
-	}
-
-	radosgwKeyring, err := os.Create("/var/lib/ceph/radosgw/ceph-radosgw.gateway/keyring")
-	if err != nil {
-		return fmt.Errorf("could not create keyring: %w", err)
-	}
-	defer radosgwKeyring.Close()
-
-	cephCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(cephCtx, "ceph", "auth", "get-or-create", "client.radosgw.gateway", "osd", "allow rwx", "mon", "allow rw")
-	cmd.Stdout = radosgwKeyring
-
-	var out bytes.Buffer
-	cmd.Stderr = &out
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("could not create keyring: %w: %s", err, out.String())
-	}
-
-	cephUserUid, cephGroupGid, err := cephUser()
-	if err != nil {
-		return fmt.Errorf("could not get ceph user: %w", err)
-	}
-
-	if err := util.ChownRecursive("/var/lib/ceph/radosgw/ceph-radosgw.gateway", cephUserUid, cephGroupGid); err != nil {
-		return fmt.Errorf("could not change owner: %w", err)
-	}
-
-	return nil
-}
-
-func configureManager(ctx context.Context) error {
-	if err := os.MkdirAll("/var/lib/ceph/mgr/ceph-a", 0o755); err != nil {
-		return fmt.Errorf("could not create directory: %w", err)
-	}
-
-	mgrKeyring, err := os.Create("/var/lib/ceph/mgr/ceph-a/keyring")
-	if err != nil {
-		return fmt.Errorf("could not create keyring: %w", err)
-	}
-	defer mgrKeyring.Close()
-
-	cephCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(cephCtx, "ceph", "auth", "get-or-create", "mgr.a", "mon", "allow profile mgr", "osd", "allow *", "mds", "allow *")
-	cmd.Stdout = mgrKeyring
-
-	var out bytes.Buffer
-	cmd.Stderr = &out
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("could not create keyring: %w: %s", err, out.String())
-	}
-
-	cephUserUid, cephGroupGid, err := cephUser()
-	if err != nil {
-		return fmt.Errorf("could not get ceph user: %w", err)
-	}
-
-	if err := util.ChownRecursive("/var/lib/ceph/mgr/ceph-a", cephUserUid, cephGroupGid); err != nil {
-		return fmt.Errorf("could not change owner: %w", err)
-	}
-
-	return nil
-}
-
-func configureMonitor(ctx context.Context, fsid string) error {
-	if err := os.MkdirAll("/var/lib/ceph/mon/ceph-a", 0o755); err != nil {
-		return fmt.Errorf("could not create directory: %w", err)
-	}
-
-	cmd := exec.CommandContext(ctx, "ceph-authtool", "--create-keyring", "/tmp/ceph.mon.keyring", "--gen-key", "-n", "mon.", "--cap", "mon", "allow *")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("could not create keyring: %w: %s", err, out)
-	}
-
-	cmd = exec.CommandContext(ctx, "ceph-authtool", "--create-keyring", "/etc/ceph/ceph.client.admin.keyring", "--gen-key", "-n", "client.admin", "--cap", "mon", "allow *", "--cap", "osd", "allow *", "--cap", "mds", "allow *", "--cap", "mgr", "allow *")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("could not create keyring: %w: %s", err, out)
-	}
-
-	cmd = exec.CommandContext(ctx, "ceph-authtool", "--create-keyring", "/var/lib/ceph/bootstrap-osd/ceph.keyring", "--gen-key", "-n", "client.bootstrap-osd", "--cap", "mon", "profile bootstrap-osd", "--cap", "mgr", "allow r")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("could not create keyring: %w: %s", err, out)
-	}
-
-	cmd = exec.CommandContext(ctx, "ceph-authtool", "/tmp/ceph.mon.keyring", "--import-keyring", "/etc/ceph/ceph.client.admin.keyring")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("could not import keyring: %w: %s", err, out)
-	}
-
-	cmd = exec.CommandContext(ctx, "ceph-authtool", "/tmp/ceph.mon.keyring", "--import-keyring", "/var/lib/ceph/bootstrap-osd/ceph.keyring")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("could not import keyring: %w: %s", err, out)
-	}
-
-	cmd = exec.CommandContext(ctx, "monmaptool", "--create", "--addv", "a", "[v2:127.0.0.1:3300,v1:127.0.0.1:6789]", "--fsid", fsid, "/tmp/monmap")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("could not create monmap: %w: %s", err, out)
-	}
-
-	cmd = exec.CommandContext(ctx, "ceph-mon", "--mkfs", "-i", "a", "--monmap", "/tmp/monmap", "--keyring", "/tmp/ceph.mon.keyring")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("could not create monitor: %w: %s", err, out)
-	}
-
-	cephUserUid, cephGroupGid, err := cephUser()
-	if err != nil {
-		return fmt.Errorf("could not get ceph user: %w", err)
-	}
-
-	if err := util.ChownRecursive("/etc/ceph", cephUserUid, cephGroupGid); err != nil {
-		return fmt.Errorf("could not change owner: %w", err)
-	}
-
-	if err := os.Chown("/var/lib/ceph/mon/ceph-a", cephUserUid, cephGroupGid); err != nil {
-		return fmt.Errorf("could not change owner: %w", err)
-	}
-
-	return nil
-}
-
-func writeCephConf(fsid string) error {
-	cephConf, err := os.Create("/etc/ceph/ceph.conf")
-	if err != nil {
-		return fmt.Errorf("could not create ceph.conf: %w", err)
-	}
-	defer cephConf.Close()
-
-	tmpl := tmpl.GetCephConf()
-
-	if err := tmpl.Execute(cephConf, struct {
-		FSID string
-	}{
-		FSID: fsid,
-	}); err != nil {
-		return fmt.Errorf("could not execute ceph.conf template: %w", err)
-	}
-
-	cephUserUid, cephGroupGid, err := cephUser()
-	if err != nil {
-		return fmt.Errorf("could not get ceph user: %w", err)
-	}
-
-	if err := os.Chown("/etc/ceph/ceph.conf", cephUserUid, cephGroupGid); err != nil {
-		return fmt.Errorf("could not change owner: %w", err)
-	}
-
-	return nil
-}
-
-func createOSDDevice(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "/usr/sbin/dmsetup", "remove", "-v", "ceph--vg-osd--0")
-	_ = cmd.Run()
-
-	if err := os.RemoveAll("/dev/ceph-vg"); err != nil {
-		return fmt.Errorf("could not remove directory: %w", err)
-	}
-
-	if err := os.MkdirAll("/var/lib/ceph/disk", 0o755); err != nil {
-		return fmt.Errorf("could not create directory: %w", err)
-	}
-
-	// Create a qemu image.
-	cmd = exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", "/var/lib/ceph/disk/osd-0.qcow2", "10G")
-	if output, err := cmd.Output(); err != nil {
-		return fmt.Errorf("could not create qemu image: %w: %s", err, output)
-	}
-
-	// Load the nbd kernel module (if not already loaded or built-in).
-	if err := nbd.Setup(ctx); err != nil {
-		// TODO: maybe we can fall back to using a loop device?
-		return fmt.Errorf("could not setup nbd: %w", err)
-	}
-
-	// Find the next free nbd device.
-	nbdDevicePath, err := nbd.NextFreeDevice()
-	if err != nil {
-		return fmt.Errorf("could not find free nbd device: %w", err)
-	}
-
-	// Mount the image using nbd.
-	cmd = exec.CommandContext(ctx, "qemu-nbd", "--connect="+nbdDevicePath, "/var/lib/ceph/disk/osd-0.qcow2")
-	if output, err := cmd.Output(); err != nil {
-		return fmt.Errorf("could not mount qemu image: %w: %s", err, output)
-	}
-
-	cmd = exec.CommandContext(ctx, "pvcreate", nbdDevicePath)
-	cmd.Env = append(os.Environ(), "DM_DISABLE_UDEV=1")
-	if output, err := cmd.Output(); err != nil {
-		return fmt.Errorf("could not create physical volume: %w: %s", err, output)
-	}
-
-	cmd = exec.CommandContext(ctx, "vgcreate", "ceph-vg", nbdDevicePath)
-	cmd.Env = append(os.Environ(), "DM_DISABLE_UDEV=1")
-	if output, err := cmd.Output(); err != nil {
-		return fmt.Errorf("could not create volume group: %w: %s", err, output)
-	}
-
-	cmd = exec.CommandContext(ctx, "lvcreate", "-l", "100%FREE", "-n", "osd-0", "ceph-vg")
-	cmd.Env = append(os.Environ(), "DM_DISABLE_UDEV=1")
-	if output, err := cmd.Output(); err != nil {
-		return fmt.Errorf("could not create logical volume: %w: %s", err, output)
-	}
-
-	return nil
-}
-
-func cephUser() (int, int, error) {
-	cephUser, err := user.Lookup("ceph")
-	if err != nil {
-		return -1, -1, fmt.Errorf("could not get ceph user: %w", err)
-	}
-
-	cephUserUid, err := strconv.Atoi(cephUser.Uid)
-	if err != nil {
-		return -1, -1, fmt.Errorf("could not convert ceph user uid: %w", err)
-	}
-
-	cephGroup, err := user.LookupGroup("ceph")
-	if err != nil {
-		return -1, -1, fmt.Errorf("could not get ceph group: %w", err)
-	}
-
-	cephGroupGid, err := strconv.Atoi(cephGroup.Gid)
-	if err != nil {
-		return -1, -1, fmt.Errorf("could not convert ceph group gid: %w", err)
-	}
-
-	return cephUserUid, cephGroupGid, nil
 }

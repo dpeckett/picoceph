@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: MPL-2.0
- *
+// SPDX-License-Identifier: MPL-2.0
+/*
  * Copyright (c) 2024 Damian Peckett <damian@pecke.tt>
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 )
 
+// ChownRecursive chowns a file or directory and all of its children.
 func ChownRecursive(path string, uid, gid int) error {
 	if err := os.Chown(path, uid, gid); err != nil {
 		return err
