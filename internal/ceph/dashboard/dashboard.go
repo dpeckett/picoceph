@@ -16,7 +16,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/bucket-sailor/picoceph/internal/ceph"
+	"github.com/dpeckett/picoceph/internal/ceph"
 	"github.com/nxadm/tail"
 )
 

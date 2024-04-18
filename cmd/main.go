@@ -18,12 +18,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/bucket-sailor/picoceph/internal/ceph"
-	"github.com/bucket-sailor/picoceph/internal/ceph/dashboard"
-	"github.com/bucket-sailor/picoceph/internal/ceph/manager"
-	"github.com/bucket-sailor/picoceph/internal/ceph/monitor"
-	"github.com/bucket-sailor/picoceph/internal/ceph/osd"
-	"github.com/bucket-sailor/picoceph/internal/ceph/radosgw"
+	"github.com/dpeckett/picoceph/internal/ceph"
+	"github.com/dpeckett/picoceph/internal/ceph/dashboard"
+	"github.com/dpeckett/picoceph/internal/ceph/manager"
+	"github.com/dpeckett/picoceph/internal/ceph/monitor"
+	"github.com/dpeckett/picoceph/internal/ceph/osd"
+	"github.com/dpeckett/picoceph/internal/ceph/radosgw"
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 )

@@ -1,4 +1,4 @@
-module github.com/bucket-sailor/picoceph
+module github.com/dpeckett/picoceph
 
 go 1.22.0
 

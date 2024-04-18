@@ -16,8 +16,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/bucket-sailor/picoceph/internal/ceph"
-	"github.com/bucket-sailor/picoceph/internal/util"
+	"github.com/dpeckett/picoceph/internal/ceph"
+	"github.com/dpeckett/picoceph/internal/util"
 	"github.com/nxadm/tail"
 )
 

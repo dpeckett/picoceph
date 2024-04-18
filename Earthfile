@@ -14,8 +14,8 @@ docker:
   EXPOSE 8080/tcp # Dashboard
   ENTRYPOINT ["picoceph"]
   ARG VERSION=latest-dev
-  SAVE IMAGE --push ghcr.io/bucket-sailor/picoceph:${VERSION}
-  SAVE IMAGE --push ghcr.io/bucket-sailor/picoceph:latest
+  SAVE IMAGE --push ghcr.io/dpeckett/picoceph:${VERSION}
+  SAVE IMAGE --push ghcr.io/dpeckett/picoceph:latest
 
 build:
   ARG GOOS=linux
